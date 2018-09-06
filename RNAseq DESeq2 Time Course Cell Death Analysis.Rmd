@@ -1,0 +1,383 @@
+---
+title: "RNAseq DESeq2 Time Course"
+author: "Jack"
+date: "June 30, 2018"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+setwd("~/Quaranta/Apoptosis of BRAF Melanoma/DESeq2")
+```
+
+This is a pipeline for differential analysis of RNASeq data from SKMEL5 sublines using DESeq2 statistical package. Three sublines: SC01 (*regressing*), SC07 (*stationary*) and SC10 (*expanding*) were analyzed for gene expression differences. In addition, time course changes in 8uM PLX4720 were also performed for each subline. Time points are: 0, 3d, 8d. The differential analysis will be performed based on the contrasts defined below. 
+General steps for the analysis are:
+
+###1. Read counts table: 
++ Could be read directly as a csv/txt file. 
++ Alignment and read counts could be done within R environment to create read counts table. 
+1. Define working directory, load the required libraries. 
+2. Get read counts table. 
+Read the raw counts file processed by featureCounts. The fastq files were aligned with HiSat2, and the read counts were obtained using featureCounts of Rsubread packages.
+```{r, echo=TRUE}
+d <- read.csv("featureCounts_matrix_all_SC1,7,10_0,3,8d_8umPLX4720.csv", header=T, sep=",")
+
+#Rename columns
+cols <- c("ensembl_gene_id", "SC01_day0_rep1", "SC01_day0_rep2", "SC01_day0_rep3",
+          "SC01_day3_rep1", "SC01_day3_rep2", "SC01_day3_rep3",
+          "SC01_day8_rep1", "SC01_day8_rep2", "SC01_day8_rep3",
+          "SC07_day0_rep1", "SC07_day0_rep2", "SC07_day0_rep3",
+          "SC07_day3_rep1", "SC07_day3_rep2", "SC07_day3_rep3",
+          "SC07_day8_rep1", "SC07_day8_rep2", "SC07_day8_rep3",
+          "SC10_day0_rep1", "SC10_day0_rep2", "SC10_day0_rep3",
+          "SC10_day3_rep1", "SC10_day3_rep2", "SC10_day3_rep3",
+          "SC10_day8_rep1", "SC10_day8_rep2", "SC10_day8_rep3")
+names(d) <- cols
+
+countdata <- d[,-1]  
+# baseline <- c(1,2,3,10,11,12,19,20,21)
+# treat3d  <- c(4,5,6,13,14,15,22,23,24)
+# treat8d  <- c(7,8,9,16,17,18,25,26,27)
+# # define the groups by subclones
+# sc01 <- c(baseline[1:3], treat3d[1:3], treat8d[1:3])
+# sc07 <- c(baseline[4:6], treat3d[4:6], treat8d[4:6])
+# sc10 <- c(baseline[7:9], treat3d[7:9], treat8d[7:9])
+# # Get the countdata specific to conditions: 
+# # countdata <- countdata[,c(baseline)] 
+rownames(countdata) <- d[,"ensembl_gene_id"]
+head(countdata)
+nrow(countdata)
+ncol(countdata)
+```
+
+
+###2. Convert counts table to DESeq2 object. 
+Convert counts table to object for DESeq2 or any other analysis pipeline. This step will require to prepare data object in a form that is suitable for analysis in DESeq2 pipeline: we will need the following to proceed:
+  
+  + countdata: a table with the read/fragment counts. 
+  + coldata: a table with information about the samples. 
+  
+Using the matrix of counts and the sample information table, we need to construct the DESeqDataSet object, for which we will use DESeqDataSetFromMatrix.....
+
+#### 1. Define the samples and treatment conditions. 
+```{r}
+condition <- c("0", "3", "8")
+treatment <- rep(condition, each=3) # Three biological replicates
+unique(treatment)
+cell <- c("SC01", "SC07","SC10") #sublines used for the analysis
+cellName <- rep(cell, each=3)
+
+coldata <- data.frame(cell=rep(cellName), treatment=rep(treatment, each=3))
+group = factor(paste(coldata$cell, coldata$treatment, sep="."))
+coldata$group = group
+```
+
+#### 2. construct the DESeqDataSet object from the matrix of counts and the sample information table. 
+Described above are: countdata- raw counts, coldata: sample information table. 
+```{r}
+library(DESeq2)
+dds <- DESeqDataSetFromMatrix(countData = countdata,
+                              colData = coldata,
+                              design = ~ cell + treatment + cell:treatment)
+dds
+nrow(dds); ncol(dds)
+```
+
+###3. Exploratory analysis and visualization.
+There are two separate steps in the workflow; the one which involves data transformations in order to visualize sample relationships and the second step involves statistical testing methods which requires the original raw counts. 
+
+#### 1. Pre-filtering and normalization. 
+Pre-filtering and normalization is required to remove lowly expressed genes. 
+
+```{r}
+dds2 <- dds[rowSums(counts(dds)) > 18, ] # remove rows with minimum of 2 read per condition
+nrow(dds2)
+# save(dds2, file = "DDS_SC-1,7,10_cell-treat-int.RData")
+load("DDS_SC-1,7,10_cell-treat-int.RData")
+
+```
+
+#### 2. Visualize sample-to-sample distances. 
+We could use Principal Component Analysis (PCA) to visualize relationships between samples. 
+```{r}
+rld <- rlog(dds2, blind = FALSE)
+save(rld, file = "RLD_SC-1,7,10_0,3,8d_20180701.RData")
+load("RLD_SC-1,7,10_0,3,8d_20180701.RData")
+plotPCA(rld, intgroup = c("cell", "treatment"), ntop=5000)
+
+#This didn't work very well, I think I need to have their data and plot it alongside this dataset, but not sure. Need to look into papers details for full analysis, but focus on simple stuff first.
+#Plotting PCA of only Graeber multi-stage genes
+library(ggfortify)
+gag = read.delim("Graeber_DE_DifferentiationStates.txt", header=T, stringsAsFactors = F)
+library(biomaRt)
+ensembl <- useMart("ensembl")
+mart <- useDataset("hsapiens_gene_ensembl", mart = ensembl)
+genes = gag$Gene
+G_list <- getBM(attributes= c("ensembl_gene_id","hgnc_symbol"),
+                filters= "hgnc_symbol",
+                values=genes,
+                mart=mart)
+subrl = data.frame(assay(rld))
+subrl$ensembl_gene_id = row.names(subrl)
+GE_data <- merge(G_list, subrl, by = "ensembl_gene_id")
+GE2 = merge(gag, GE_data, by.y = "hgnc_symbol", by.x = "Gene" )
+
+#From PCA package, need to reshape dataframe and have genes across the top with classifications specified
+tGE = GE_data[,-1]
+tGE = data.frame(t(tGE))
+colnames(tGE) = GE_data$hgnc_symbol
+tGE$ID = row.names(tGE)
+tGE = tGE[-1,c(515,1:514)]
+
+#Splitting ID to have coldata grouping
+Groupd <- data.frame(do.call('rbind', strsplit(tGE$ID,'_',fixed=TRUE)), stringsAsFactors = FALSE)
+tGE$SC = Groupd$X1
+tGE$Time = Groupd$X2
+tGE$Rep = Groupd$X3
+tGE$PCAgroup = paste0(tGE$SC,":", tGE$Time)
+tGE2 = tGE[,c(1,516:519,2:515)]
+row.names(tGE2) = NULL
+
+#Change rlog numbers to numeric
+df = tGE2[,c(6:519)]
+for(i in 1:ncol(df)){
+  df[,i] = as.numeric(as.character(df[,i]))
+}
+autoplot(prcomp(df), data = tGE2, colour = 'PCAgroup')
+
+```
+
+### 4. Differential Expression Analysis. 
+Always make sure to use the unnormalized raw counts for this. We will use DESeq function to perform differential analysis between samples; Unless specified, the analysis is between the last group and the first group. Different comparison can be done using 'contrast' argument. Steps involved underneath:
+
+1. estimation of size factors (controls for differences in sequencing depth of the samples)
+2. estimation of dispersion values for each gene,
+3. fitting a generalized linear model
+
+#### 1. Running the differential expression pipeline. 
+```{r, cache=TRUE}
+design(dds2) = ~ cell + treatment + cell:treatment
+dds <- DESeq(dds2, test = "LRT", reduced = ~ cell + treatment)
+save(dds, file = "DESeq_SC1,7,10_Timecourse_LRT.RData")
+load("DESeq_SC1,7,10_Timecourse_LRT.RData")
+dds
+```
+
+#### 2. Building the results table. 
+By default, results will extract the estimated log2 fold changes and p values for the last variable in the design formula. If there are more than 2 levels for this variable, results will extract the results table for a comparison of the last level over the first level. 
+```{r}
+# Esimate the differences between groups by: # a) Lowering the FDR (padj) or (b) raise the log2 fold change.
+
+resultsNames(dds)
+res <- results(dds, alpha = 0.001)
+rdata = as.data.frame(res)
+
+```
+
+#### 3. Z-score heatmaps of cell death genesets based on DESeq count
+I found apoptosis, ferroptosis, and necrosis/necroptosis gene sets from KEGGdb. Used the API to take IDs and hgnc symbols, then formatted into tab delimited file that can  be used for subsetting the DE matrix. Made z-score heatmaps of the regularized log of the DESeq counts. Essentially, this is the log2 of the the normalized counts from DESeq.I believe regularized log2 is a better way to calculate z-scores since it is a normally distributed metric.
+
+
+```{r}
+
+# normalizedCounts <- t( t(counts(dds)) / sizeFactors(dds) )
+
+#log2 normalized counts
+rld2 <- rlog(dds, blind = FALSE)
+save(rld2, file = "RLD2_SC1,7,10_Timecourse_hmap.RData")
+
+load("RLD2_SC1,7,10_Timecourse_hmap.RData")
+
+#Grab all the names from res in the DESeq matrix
+topGenes <- which(res$padj <= 0.001)
+
+# countMAT = data.frame(normalizedCounts[topGenes,])
+
+subrl = data.frame(assay(rld2))
+rlMAT = data.frame(subrl[topGenes,])
+
+#Labeling rows with ENSG IDs
+# countMAT$ensembl_gene_id = row.names(countMAT)
+# countMAT$padj = res[topGenes,"padj"]
+
+rlMAT$ensembl_gene_id = row.names(rlMAT)
+rlMAT$padj = res[topGenes,"padj"]
+
+library(biomaRt)
+ensembl <- useMart("ensembl")
+mart <- useDataset("hsapiens_gene_ensembl", mart = ensembl)
+genes = row.names(rlMAT)
+G_list <- getBM(attributes= c("ensembl_gene_id","hgnc_symbol"),
+                filters= "ensembl_gene_id",
+                values=genes,
+                mart=mart)
+
+#Check if data fits a normal distribution
+plot(density(c(as.matrix(countMAT[,1:27]))))
+plot(density(c(as.matrix(rlMAT[,1:27]))))
+
+
+#rlMAT follows a normal distribution, therefore we will use this in the heatmap construction
+#Labeling df with hgnc symbols
+GE_data <- merge(G_list, rlMAT, by = "ensembl_gene_id")
+
+#Making rownames unique hgnc symbols
+rownames(GE_data) <- make.names(GE_data[,"hgnc_symbol"], unique = TRUE)
+GE_data = GE_data[order(GE_data$padj),]
+
+
+#Averaging rld between trials
+Acol <- c("SC01_day0",
+          "SC01_day3",
+          "SC01_day8",
+          "SC07_day0",
+          "SC07_day3",
+          "SC07_day8",
+          "SC10_day0",
+          "SC10_day3",
+          "SC10_day8")
+for(i in 1:length(Acol)){
+  j = 2+i
+  k = 2+3*i
+  GE_data[,Acol[i]] = rowMeans(GE_data[,c(j:k)])
+}
+
+
+#Calculating fold changes across conditions in a triangular matrix form
+GE_mean = GE_data[,c(1,2,30:39)]
+DEProc = GE_mean
+startcol = 4
+endcol = 12
+
+allFC <- function(DEProc,startcol,endcol){ 
+  GE_fold = DEProc[,-c(startcol:endcol)]
+  colvec = colnames(DEProc)[startcol:endcol]
+  
+  #Last index is a self comparion and is removed
+  for(k in 1:(length(colvec)-1)){
+      #Start with column that is 1 away from index 
+    for(j in (k+1):length(colvec)){
+      compnam = paste0(colvec[j],"/",colvec[k])
+      #Loop through each gene/row  
+      for(i in 1:nrow(DEProc)){
+        f = DEProc[i,colvec[j]]
+        h = DEProc[i,colvec[k]]
+        
+        #Capture upregulation and down regulation
+        if(f>h){
+          GE_fold[i,compnam] = 2^(f-h)
+        }else{
+          GE_fold[i,compnam] = -2^(h-f)
+        }
+      
+      }
+    }
+  }
+  
+  return(GE_fold)
+    
+}
+  
+#Subset gene, then plot, then save plot
+#Perhaps make heatmaps with scaled z scores
+#Is there a way to consolidate replicate z scores? Geometric mean? 
+#Regular mean, then scale.
+
+# ImpRat = colnames(GE_fold)[c(4,5,6,9,12,14,17,21,24,25,26,27,30,32,36,37,38,39)]
+ImpRat = c("SC01_day3/SC01_day0", "SC01_day8/SC01_day3", "SC01_day8/SC01_day0", 
+           "SC07_day3/SC07_day0", "SC07_day8/SC07_day3", "SC07_day8/SC07_day0", 
+           "SC10_day3/SC10_day0", "SC10_day8/SC10_day3", "SC10_day8/SC10_day0", 
+           "SC07_day0/SC01_day0", "SC10_day0/SC01_day0", "SC10_day0/SC07_day0",
+           "SC07_day3/SC01_day3", "SC10_day3/SC01_day3", "SC10_day3/SC07_day3",
+           "SC07_day8/SC01_day8", "SC10_day8/SC01_day8", "SC10_day8/SC07_day8" )
+Imp_fold = GE_fold[,c("ensembl_gene_id", "hgnc_symbol", "padj", ImpRat)]
+Imp_fold2 = Imp_fold[rowSums(abs(Imp_fold[,4:21])>=1.5)>=1,]
+
+write.table(Imp_fold,"SC1,7,10-TimecoursePLX-ImportantFC_20180722.txt", sep="\t", row.names=F)
+
+Imp_fold = read.delim("SC1,7,10-TimecoursePLX-ImportantFC_20180722.txt", sep="\t")
+
+GE_Imp = subset(GE_mean,GE_mean$ensembl_gene_id%in%Imp_fold2$ensembl_gene_id)
+
+library(pheatmap)
+
+Necro = read.delim("KEGGNecroptosis_hsa04217_06-25-18.txt", header=T, stringsAsFactors = F)
+Necro = Necro[rowSums(is.na(Necro)) == 0, ]
+DE_Necro = merge(Imp_fold2, Necro, by.x = "hgnc_symbol", by.y = "GeneName")
+row.names(DE_Necro) = make.names(DE_Necro[,"hgnc_symbol"], unique = TRUE)
+pheatmap(DE_Necro[3:29],cluster_cols = TRUE)
+write.table(DE_Necro, "KEGGNecroptosis SC1,7,10 DESeq LRT.txt", sep="\t", row.names=FALSE, quote=FALSE)
+
+
+Apop = read.delim("KEGGApoptosis_hsa04210_06-25-18.txt", header=T, stringsAsFactors = F)
+Apop = Apop[rowSums(is.na(Apop)) == 0, ]
+DE_Apop = merge(Imp_fold2, Apop, by.x = "hgnc_symbol", by.y = "GeneName")
+row.names(DE_Apop) = make.names(DE_Apop[,"hgnc_symbol"], unique = TRUE)
+pheatmap(DE_Apop[3:29],cluster_cols = TRUE, scale = "row")
+write.table(DE_Apop, "KEGGApoptosis SC1,7,10 DESeq LRT.txt", sep="\t", row.names=FALSE, quote=FALSE)
+
+Ferr = read.delim("KEGGFerroptosis_hsa04216_06-25-18.txt", header=T, stringsAsFactors = F)
+Ferr = Ferr[rowSums(is.na(Ferr)) == 0, ]
+DE_Ferr = merge(GE_Imp, Ferr, by.x = "hgnc_symbol", by.y = "GeneName")
+row.names(DE_Ferr) = make.names(DE_Ferr[,"hgnc_symbol"], unique = TRUE)
+pheatmap(DE_Ferr[4:12],cluster_cols=FALSE, scale = "row")
+write.table(DE_Ferr, "KEGGFerroptosis SC1,7,10 DESeq LRT.txt", sep="\t", row.names=FALSE, quote=FALSE)
+
+
+
+
+
+#Visually inspect trending members from heatmaps.
+#Plots of specific trending members?
+p <- ggplot(data=df2, aes(x=dose, y=len, fill=supp)) +
+geom_bar(stat="identity", color="black", position=position_dodge())+
+  theme_minimal()
+
+
+
+```
+
+
+
+```{r}
+#GLM Coef Heatmap. How does this relate to normalized expression?
+betas <- coef(dds)
+topGenes <- which(res$padj <= 0.001)
+mat <- data.frame(betas[topGenes,])
+mat$ensembl_gene_id = row.names(mat)
+mat$padj = res[topGenes,"padj"]
+ensembl <- useMart("ensembl")
+mart <- useDataset("hsapiens_gene_ensembl", mart = ensembl)
+genes = row.names(mat)
+G_list <- getBM(attributes= c("ensembl_gene_id","hgnc_symbol"),
+                filters= "ensembl_gene_id",
+                values=genes,
+                mart=mart)
+
+GE_data <- merge(mat, G_list, by = "ensembl_gene_id")
+rownames(GE_data) <- make.names(GE_data[,"hgnc_symbol"], unique = TRUE)
+GE_data = GE_data[order(GE_data$padj),]
+
+
+#Sorting script to pick out entries greater than or less than +-1
+eg = c()
+for(i in 3:10){
+  g = which(GE_data[,i] > 3 | GE_data[,i] < -3)
+  eg = c(eg,g)
+}
+eg = unique(eg)
+
+mat = GE_data[eg,-c(1:2,11,12)]
+thr <- 3 
+mat[mat < -thr] <- -thr
+mat[mat > thr] <- thr
+library(pheatmap)
+pheatmap(mat, cluster_cols = FALSE)
+
+# ssdg = sdg[1:1000, ]
+dim(sdg)
+head(sdg)
+
+```
+
+
